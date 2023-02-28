@@ -1,3 +1,4 @@
+//go:build !wasm
 // +build !wasm
 
 package buf_test
@@ -8,11 +9,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
 	"golang.org/x/sync/errgroup"
-	"v2ray.com/core/common"
-	. "v2ray.com/core/common/buf"
-	"v2ray.com/core/testing/servers/tcp"
+
+	"github.com/v2fly/v2ray-core/v5/common"
+	. "github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/testing/servers/tcp"
 )
 
 func TestReadvReader(t *testing.T) {
@@ -23,11 +24,11 @@ func TestReadvReader(t *testing.T) {
 	}
 	dest, err := tcpServer.Start()
 	common.Must(err)
-	defer tcpServer.Close() // nolint: errcheck
+	defer tcpServer.Close()
 
 	conn, err := net.Dial("tcp", dest.NetAddr())
 	common.Must(err)
-	defer conn.Close() // nolint: errcheck
+	defer conn.Close()
 
 	const size = 8192
 	data := make([]byte, 8192)

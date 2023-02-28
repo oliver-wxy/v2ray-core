@@ -1,33 +1,26 @@
-// +build !confonly
-
 package outbound
 
-//go:generate go run v2ray.com/core/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 import (
 	"context"
-	"time"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/platform"
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/retry"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/signal"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/policy"
-	"v2ray.com/core/proxy/vless"
-	"v2ray.com/core/proxy/vless/encoding"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/internet"
-	"v2ray.com/core/transport/internet/xtls"
-)
-
-var (
-	xtls_show = false
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/retry"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/proxy"
+	"github.com/v2fly/v2ray-core/v5/proxy/vless"
+	"github.com/v2fly/v2ray-core/v5/proxy/vless/encoding"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 func init() {
@@ -35,12 +28,22 @@ func init() {
 		return New(ctx, config.(*Config))
 	}))
 
-	const defaultFlagValue = "NOT_DEFINED_AT_ALL"
+	common.Must(common.RegisterConfig((*SimplifiedConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		simplifiedClient := config.(*SimplifiedConfig)
+		fullClient := &Config{Vnext: []*protocol.ServerEndpoint{
+			{
+				Address: simplifiedClient.Address,
+				Port:    simplifiedClient.Port,
+				User: []*protocol.User{
+					{
+						Account: serial.ToTypedMessage(&vless.Account{Id: simplifiedClient.Uuid, Encryption: "none"}),
+					},
+				},
+			},
+		}}
 
-	xtlsShow := platform.NewEnvFlag("v2ray.vless.xtls.show").GetValue(func() string { return defaultFlagValue })
-	if xtlsShow == "true" {
-		xtls_show = true
-	}
+		return common.CreateObject(ctx, fullClient)
+	}))
 }
 
 // Handler is an outbound connection handler for VLess protocol.
@@ -52,7 +55,6 @@ type Handler struct {
 
 // New creates a new VLess outbound handler.
 func New(ctx context.Context, config *Config) (*Handler, error) {
-
 	serverList := protocol.NewServerList()
 	for _, rec := range config.Vnext {
 		s, err := protocol.NewServerSpecFromPB(rec)
@@ -74,7 +76,6 @@ func New(ctx context.Context, config *Config) (*Handler, error) {
 
 // Process implements proxy.Outbound.Process().
 func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
-
 	var rec *protocol.ServerSpec
 	var conn internet.Connection
 
@@ -89,12 +90,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}); err != nil {
 		return newError("failed to find an available destination").Base(err).AtWarning()
 	}
-	defer conn.Close() // nolint: errcheck
-
-	iConn := conn
-	if statConn, ok := iConn.(*internet.StatCouterConnection); ok {
-		iConn = statConn.Connection
-	}
+	defer conn.Close()
 
 	outbound := session.OutboundFromContext(ctx)
 	if outbound == nil || !outbound.Target.IsValid() {
@@ -102,7 +98,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 	}
 
 	target := outbound.Target
-	newError("tunneling request to ", target, " via ", rec.Destination()).AtInfo().WriteToLog(session.ExportIDToError(ctx))
+	newError("tunneling request to ", target, " via ", rec.Destination().NetAddr()).AtInfo().WriteToLog(session.ExportIDToError(ctx))
 
 	command := protocol.RequestCommandTCP
 	if target.Network == net.Network_UDP {
@@ -126,39 +122,6 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 		Flow: account.Flow,
 	}
 
-	allowUDP443 := false
-	switch requestAddons.Flow {
-	case vless.XRO + "-udp443", vless.XRD + "-udp443":
-		allowUDP443 = true
-		requestAddons.Flow = requestAddons.Flow[:16]
-		fallthrough
-	case vless.XRO, vless.XRD:
-		switch request.Command {
-		case protocol.RequestCommandMux:
-			return newError(requestAddons.Flow + " doesn't support Mux").AtWarning()
-		case protocol.RequestCommandUDP:
-			if !allowUDP443 && request.Port == 443 {
-				return newError(requestAddons.Flow + " stopped UDP/443").AtInfo()
-			}
-			requestAddons.Flow = ""
-		case protocol.RequestCommandTCP:
-			if xtlsConn, ok := iConn.(*xtls.Conn); ok {
-				xtlsConn.RPRX = true
-				xtlsConn.SHOW = xtls_show
-				xtlsConn.MARK = "XTLS"
-				if requestAddons.Flow == vless.XRD {
-					xtlsConn.DirectMode = true
-				}
-			} else {
-				return newError(`failed to use ` + requestAddons.Flow + `, maybe "security" is not "xtls"`).AtWarning()
-			}
-		}
-	default:
-		if _, ok := iConn.(*xtls.Conn); ok {
-			panic(`To avoid misunderstanding, you must fill in VLESS "flow" when using XTLS.`)
-		}
-	}
-
 	sessionPolicy := h.policyManager.ForLevel(request.User.Level)
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
@@ -176,24 +139,18 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 		// default: serverWriter := bufferWriter
 		serverWriter := encoding.EncodeBodyAddons(bufferWriter, request, requestAddons)
-		if err := buf.CopyOnceTimeout(clientReader, serverWriter, time.Millisecond*100); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout {
+		if err := buf.CopyOnceTimeout(clientReader, serverWriter, proxy.FirstPayloadTimeout); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout {
 			return err // ...
 		}
 
-		// Flush; bufferWriter.WriteMultiBufer now is bufferWriter.writer.WriteMultiBuffer
+		// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
 		if err := bufferWriter.SetBuffered(false); err != nil {
 			return newError("failed to write A request payload").Base(err).AtWarning()
 		}
 
-		// from clientReader.ReadMultiBuffer to serverWriter.WriteMultiBufer
+		// from clientReader.ReadMultiBuffer to serverWriter.WriteMultiBuffer
 		if err := buf.Copy(clientReader, serverWriter, buf.UpdateActivity(timer)); err != nil {
 			return newError("failed to transfer request payload").Base(err).AtInfo()
-		}
-
-		// Indicates the end of request payload.
-		switch requestAddons.Flow {
-		default:
-
 		}
 
 		return nil
@@ -204,13 +161,13 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 
 		responseAddons, err := encoding.DecodeResponseHeader(conn, request)
 		if err != nil {
-			return newError("failed to decode response header").Base(err).AtWarning()
+			return newError("failed to decode response header").Base(err).AtInfo()
 		}
 
 		// default: serverReader := buf.NewReader(conn)
 		serverReader := encoding.DecodeBodyAddons(conn, request, responseAddons)
 
-		// from serverReader.ReadMultiBuffer to clientWriter.WriteMultiBufer
+		// from serverReader.ReadMultiBuffer to clientWriter.WriteMultiBuffer
 		if err := buf.Copy(serverReader, clientWriter, buf.UpdateActivity(timer)); err != nil {
 			return newError("failed to transfer response payload").Base(err).AtInfo()
 		}

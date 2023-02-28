@@ -1,5 +1,3 @@
-// +build !confonly
-
 package http
 
 import (
@@ -13,20 +11,21 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/bytespool"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/retry"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/signal"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/policy"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/internet"
-	"v2ray.com/core/transport/internet/tls"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/bytespool"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/retry"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/proxy"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tls"
 )
 
 type Client struct {
@@ -81,14 +80,23 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	var user *protocol.MemoryUser
 	var conn internet.Connection
 
-	mbuf, _ := link.Reader.ReadMultiBuffer()
-	len := mbuf.Len()
-	firstPayload := bytespool.Alloc(len)
-	mbuf, _ = buf.SplitBytes(mbuf, firstPayload)
-	firstPayload = firstPayload[:len]
+	var firstPayload []byte
 
-	buf.ReleaseMulti(mbuf)
-	defer bytespool.Free(firstPayload)
+	if reader, ok := link.Reader.(buf.TimeoutReader); ok {
+		// 0-RTT optimization for HTTP/2: If the payload comes very soon, it can be
+		// transmitted together. Note we should not get stuck here, as the payload may
+		// not exist (considering to access MySQL database via a HTTP proxy, where the
+		// server sends hello to the client first).
+		if mbuf, _ := reader.ReadMultiBufferTimeout(proxy.FirstPayloadTimeout); mbuf != nil {
+			mlen := mbuf.Len()
+			firstPayload = bytespool.Alloc(mlen)
+			mbuf, _ = buf.SplitBytes(mbuf, firstPayload)
+			firstPayload = firstPayload[:mlen]
+
+			buf.ReleaseMulti(mbuf)
+			defer bytespool.Free(firstPayload)
+		}
+	}
 
 	if err := retry.ExponentialBackoff(5, 100).On(func() error {
 		server := c.serverPicker.PickServer()
@@ -97,6 +105,12 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 
 		netConn, err := setUpHTTPTunnel(ctx, dest, targetAddr, user, dialer, firstPayload)
 		if netConn != nil {
+			if _, ok := netConn.(*http2Conn); !ok {
+				if _, err := netConn.Write(firstPayload); err != nil {
+					netConn.Close()
+					return err
+				}
+			}
 			conn = internet.Connection(netConn)
 		}
 		return err
@@ -127,7 +141,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		return buf.Copy(buf.NewReader(conn), link.Writer, buf.UpdateActivity(timer))
 	}
 
-	var responseDonePost = task.OnSuccess(responseFunc, task.Close(link.Writer))
+	responseDonePost := task.OnSuccess(responseFunc, task.Close(link.Writer))
 	if err := task.Run(ctx, requestFunc, responseDonePost); err != nil {
 		return newError("connection ends").Base(err)
 	}
@@ -159,16 +173,12 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 			return nil, err
 		}
 
-		if _, err := rawConn.Write(firstPayload); err != nil {
-			rawConn.Close()
-			return nil, err
-		}
-
 		resp, err := http.ReadResponse(bufio.NewReader(rawConn), req)
 		if err != nil {
 			rawConn.Close()
 			return nil, err
 		}
+		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
 			rawConn.Close()
@@ -190,7 +200,7 @@ func setUpHTTPTunnel(ctx context.Context, dest net.Destination, target string, u
 			wg.Done()
 		}()
 
-		resp, err := h2clientConn.RoundTrip(req)
+		resp, err := h2clientConn.RoundTrip(req) // nolint: bodyclose
 		if err != nil {
 			rawConn.Close()
 			return nil, err

@@ -1,12 +1,14 @@
-// +build !confonly
-
 package dispatcher
 
 import (
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/protocol/bittorrent"
-	"v2ray.com/core/common/protocol/http"
-	"v2ray.com/core/common/protocol/tls"
+	"context"
+
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/bittorrent"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/http"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/quic"
+	"github.com/v2fly/v2ray-core/v5/common/protocol/tls"
 )
 
 type SniffResult interface {
@@ -14,30 +16,57 @@ type SniffResult interface {
 	Domain() string
 }
 
-type protocolSniffer func([]byte) (SniffResult, error)
+type protocolSniffer func(context.Context, []byte) (SniffResult, error)
 
-type Sniffer struct {
-	sniffer []protocolSniffer
+type protocolSnifferWithMetadata struct {
+	protocolSniffer protocolSniffer
+	// A Metadata sniffer will be invoked on connection establishment only, with nil body,
+	// for both TCP and UDP connections
+	// It will not be shown as a traffic type for routing unless there is no other successful sniffing.
+	metadataSniffer bool
+	network         net.Network
 }
 
-func NewSniffer() *Sniffer {
-	return &Sniffer{
-		sniffer: []protocolSniffer{
-			func(b []byte) (SniffResult, error) { return http.SniffHTTP(b) },
-			func(b []byte) (SniffResult, error) { return tls.SniffTLS(b) },
-			func(b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) },
+type Sniffer struct {
+	sniffer []protocolSnifferWithMetadata
+}
+
+func NewSniffer(ctx context.Context) *Sniffer {
+	ret := &Sniffer{
+		sniffer: []protocolSnifferWithMetadata{
+			{func(c context.Context, b []byte) (SniffResult, error) { return http.SniffHTTP(b) }, false, net.Network_TCP},
+			{func(c context.Context, b []byte) (SniffResult, error) { return tls.SniffTLS(b) }, false, net.Network_TCP},
+			{func(c context.Context, b []byte) (SniffResult, error) { return quic.SniffQUIC(b) }, false, net.Network_UDP},
+			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffBittorrent(b) }, false, net.Network_TCP},
+			{func(c context.Context, b []byte) (SniffResult, error) { return bittorrent.SniffUTP(b) }, false, net.Network_UDP},
 		},
 	}
+	if sniffer, err := newFakeDNSSniffer(ctx); err == nil {
+		others := ret.sniffer
+		ret.sniffer = append(ret.sniffer, sniffer)
+		fakeDNSThenOthers, err := newFakeDNSThenOthers(ctx, sniffer, others)
+		if err == nil {
+			ret.sniffer = append([]protocolSnifferWithMetadata{fakeDNSThenOthers}, ret.sniffer...)
+		}
+	}
+	return ret
 }
 
 var errUnknownContent = newError("unknown content")
 
-func (s *Sniffer) Sniff(payload []byte) (SniffResult, error) {
-	var pendingSniffer []protocolSniffer
-	for _, s := range s.sniffer {
-		result, err := s(payload)
+func (s *Sniffer) Sniff(c context.Context, payload []byte, network net.Network) (SniffResult, error) {
+	var pendingSniffer []protocolSnifferWithMetadata
+	for _, si := range s.sniffer {
+		s := si.protocolSniffer
+		if si.metadataSniffer {
+			continue
+		}
+		if si.network != network {
+			continue
+		}
+		result, err := s(c, payload)
 		if err == common.ErrNoClue {
-			pendingSniffer = append(pendingSniffer, s)
+			pendingSniffer = append(pendingSniffer, si)
 			continue
 		}
 
@@ -52,4 +81,60 @@ func (s *Sniffer) Sniff(payload []byte) (SniffResult, error) {
 	}
 
 	return nil, errUnknownContent
+}
+
+func (s *Sniffer) SniffMetadata(c context.Context) (SniffResult, error) {
+	var pendingSniffer []protocolSnifferWithMetadata
+	for _, si := range s.sniffer {
+		s := si.protocolSniffer
+		if !si.metadataSniffer {
+			pendingSniffer = append(pendingSniffer, si)
+			continue
+		}
+		result, err := s(c, nil)
+		if err == common.ErrNoClue {
+			pendingSniffer = append(pendingSniffer, si)
+			continue
+		}
+
+		if err == nil && result != nil {
+			return result, nil
+		}
+	}
+
+	if len(pendingSniffer) > 0 {
+		s.sniffer = pendingSniffer
+		return nil, common.ErrNoClue
+	}
+
+	return nil, errUnknownContent
+}
+
+func CompositeResult(domainResult SniffResult, protocolResult SniffResult) SniffResult {
+	return &compositeResult{domainResult: domainResult, protocolResult: protocolResult}
+}
+
+type compositeResult struct {
+	domainResult   SniffResult
+	protocolResult SniffResult
+}
+
+func (c compositeResult) Protocol() string {
+	return c.protocolResult.Protocol()
+}
+
+func (c compositeResult) Domain() string {
+	return c.domainResult.Domain()
+}
+
+func (c compositeResult) ProtocolForDomainResult() string {
+	return c.domainResult.Protocol()
+}
+
+type SnifferResultComposite interface {
+	ProtocolForDomainResult() string
+}
+
+type SnifferIsProtoSubsetOf interface {
+	IsProtoSubsetOf(protocolName string) bool
 }

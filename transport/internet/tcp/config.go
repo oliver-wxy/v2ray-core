@@ -1,10 +1,8 @@
-// +build !confonly
-
 package tcp
 
 import (
-	"v2ray.com/core/common"
-	"v2ray.com/core/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 const protocolName = "tcp"

@@ -1,5 +1,3 @@
-// +build !confonly
-
 package http
 
 import (
@@ -10,12 +8,14 @@ import (
 	"sync"
 
 	"golang.org/x/net/http2"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/transport/internet"
-	"v2ray.com/core/transport/internet/tls"
-	"v2ray.com/core/transport/pipe"
+
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/tls"
+	"github.com/v2fly/v2ray-core/v5/transport/pipe"
 )
 
 var (
@@ -23,16 +23,24 @@ var (
 	globalDialerAccess sync.Mutex
 )
 
-func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.Config) (*http.Client, error) {
+type dialerCanceller func()
+
+func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.Config, streamSettings *internet.MemoryStreamConfig) (*http.Client, dialerCanceller) {
 	globalDialerAccess.Lock()
 	defer globalDialerAccess.Unlock()
+
+	canceller := func() {
+		globalDialerAccess.Lock()
+		defer globalDialerAccess.Unlock()
+		delete(globalDialerMap, dest)
+	}
 
 	if globalDialerMap == nil {
 		globalDialerMap = make(map[net.Destination]*http.Client)
 	}
 
 	if client, found := globalDialerMap[dest]; found {
-		return client, nil
+		return client, canceller
 	}
 
 	transport := &http2.Transport{
@@ -50,7 +58,8 @@ func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.C
 			}
 			address := net.ParseAddress(rawHost)
 
-			pconn, err := internet.DialSystem(context.Background(), net.TCPDestination(address, port), nil)
+			detachedContext := core.ToBackgroundDetachedContext(ctx)
+			pconn, err := internet.DialSystem(detachedContext, net.TCPDestination(address, port), streamSettings.SocketSettings)
 			if err != nil {
 				return nil, err
 			}
@@ -68,9 +77,6 @@ func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.C
 			if p := state.NegotiatedProtocol; p != http2.NextProtoTLS {
 				return nil, newError("http2: unexpected ALPN protocol " + p + "; want q" + http2.NextProtoTLS).AtError()
 			}
-			if !state.NegotiatedProtocolIsMutual {
-				return nil, newError("http2: could not negotiate protocol mutually").AtError()
-			}
 			return cn, nil
 		},
 		TLSClientConfig: tlsSettings.GetTLSConfig(tls.WithDestination(dest)),
@@ -81,7 +87,7 @@ func getHTTPClient(ctx context.Context, dest net.Destination, tlsSettings *tls.C
 	}
 
 	globalDialerMap[dest] = client
-	return client, nil
+	return client, canceller
 }
 
 // Dial dials a new TCP connection to the given destination.
@@ -91,16 +97,27 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 	if tlsConfig == nil {
 		return nil, newError("TLS must be enabled for http transport.").AtWarning()
 	}
-	client, err := getHTTPClient(ctx, dest, tlsConfig)
-	if err != nil {
-		return nil, err
-	}
+	client, canceller := getHTTPClient(ctx, dest, tlsConfig, streamSettings)
 
 	opts := pipe.OptionsFromContext(ctx)
 	preader, pwriter := pipe.New(opts...)
 	breader := &buf.BufferedReader{Reader: preader}
+
+	httpMethod := "PUT"
+	if httpSettings.Method != "" {
+		httpMethod = httpSettings.Method
+	}
+
+	httpHeaders := make(http.Header)
+
+	for _, httpHeader := range httpSettings.Header {
+		for _, httpHeaderValue := range httpHeader.Value {
+			httpHeaders.Set(httpHeader.Name, httpHeaderValue)
+		}
+	}
+
 	request := &http.Request{
-		Method: "PUT",
+		Method: httpMethod,
 		Host:   httpSettings.getRandomHost(),
 		Body:   breader,
 		URL: &url.URL{
@@ -111,13 +128,14 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *internet.Me
 		Proto:      "HTTP/2",
 		ProtoMajor: 2,
 		ProtoMinor: 0,
-		Header:     make(http.Header),
+		Header:     httpHeaders,
 	}
 	// Disable any compression method from server.
 	request.Header.Set("Accept-Encoding", "identity")
 
-	response, err := client.Do(request)
+	response, err := client.Do(request) // nolint: bodyclose
 	if err != nil {
+		canceller()
 		return nil, newError("failed to dial to ", dest).Base(err).AtWarning()
 	}
 	if response.StatusCode != 200 {

@@ -5,8 +5,8 @@ import (
 	"runtime"
 	"time"
 
-	"v2ray.com/core/common/platform"
-	"v2ray.com/core/features"
+	"github.com/v2fly/v2ray-core/v5/common/platform"
+	"github.com/v2fly/v2ray-core/v5/features"
 )
 
 // Timeout contains limits for connection timeout.
@@ -49,8 +49,9 @@ type SystemStats struct {
 
 // System contains policy settings at system level.
 type System struct {
-	Stats  SystemStats
-	Buffer Buffer
+	Stats                 SystemStats
+	OverrideAccessLogDest bool
+	Buffer                Buffer
 }
 
 // Session is session based settings for controlling V2Ray requests. It contains various settings (or limits) that may differ for different users in the context.
@@ -117,8 +118,8 @@ func defaultBufferPolicy() Buffer {
 func SessionDefault() Session {
 	return Session{
 		Timeouts: Timeout{
-			//Align Handshake timeout with nginx client_header_timeout
-			//So that this value will not indicate server identity
+			// Align Handshake timeout with nginx client_header_timeout
+			// So that this value will not indicate server identity
 			Handshake:      time.Second * 60,
 			ConnectionIdle: time.Second * 300,
 			UplinkOnly:     time.Second * 1,

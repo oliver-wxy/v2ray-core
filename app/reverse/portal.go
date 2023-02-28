@@ -1,5 +1,3 @@
-// +build !confonly
-
 package reverse
 
 import (
@@ -7,19 +5,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/mux"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/outbound"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/pipe"
+	"google.golang.org/protobuf/proto"
+
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/mux"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/outbound"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/pipe"
 )
 
 type Portal struct {
+	ctx    context.Context
 	ohm    outbound.Manager
 	tag    string
 	domain string
@@ -27,7 +27,7 @@ type Portal struct {
 	client *mux.ClientManager
 }
 
-func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
+func NewPortal(ctx context.Context, config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
 	if config.Tag == "" {
 		return nil, newError("portal tag is empty")
 	}
@@ -42,6 +42,7 @@ func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
 	}
 
 	return &Portal{
+		ctx:    ctx,
 		ohm:    ohm,
 		tag:    config.Tag,
 		domain: config.Domain,
@@ -53,14 +54,14 @@ func NewPortal(config *PortalConfig, ohm outbound.Manager) (*Portal, error) {
 }
 
 func (p *Portal) Start() error {
-	return p.ohm.AddHandler(context.Background(), &Outbound{
+	return p.ohm.AddHandler(p.ctx, &Outbound{
 		portal: p,
 		tag:    p.tag,
 	})
 }
 
 func (p *Portal) Close() error {
-	return p.ohm.RemoveHandler(context.Background(), p.tag)
+	return p.ohm.RemoveHandler(p.ctx, p.tag)
 }
 
 func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) error {
@@ -75,7 +76,7 @@ func (p *Portal) HandleConnection(ctx context.Context, link *transport.Link) err
 			return newError("failed to create mux client worker").Base(err).AtWarning()
 		}
 
-		worker, err := NewPortalWorker(muxClient)
+		worker, err := NewPortalWorker(ctx, muxClient)
 		if err != nil {
 			return newError("failed to create portal worker").Base(err)
 		}
@@ -153,10 +154,13 @@ func (p *StaticMuxPicker) PickAvailable() (*mux.ClientWorker, error) {
 		return nil, newError("empty worker list")
 	}
 
-	var minIdx int = -1
+	minIdx := -1
 	var minConn uint32 = 9999
 	for i, w := range p.workers {
 		if w.draining {
+			continue
+		}
+		if w.client.Closed() {
 			continue
 		}
 		if w.client.ActiveConnections() < minConn {
@@ -199,12 +203,11 @@ type PortalWorker struct {
 	draining bool
 }
 
-func NewPortalWorker(client *mux.ClientWorker) (*PortalWorker, error) {
+func NewPortalWorker(ctx context.Context, client *mux.ClientWorker) (*PortalWorker, error) {
 	opt := []pipe.Option{pipe.WithSizeLimit(16 * 1024)}
 	uplinkReader, uplinkWriter := pipe.New(opt...)
 	downlinkReader, downlinkWriter := pipe.New(opt...)
 
-	ctx := context.Background()
 	ctx = session.ContextWithOutbound(ctx, &session.Outbound{
 		Target: net.UDPDestination(net.DomainAddress(internalDomain), 0),
 	})

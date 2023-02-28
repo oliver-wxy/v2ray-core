@@ -1,5 +1,3 @@
-// +build !confonly
-
 package router
 
 import (
@@ -8,9 +6,10 @@ import (
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
 
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/strmatcher"
-	"v2ray.com/core/features/routing"
+	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/strmatcher"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
 )
 
 type Condition interface {
@@ -43,14 +42,14 @@ func (v *ConditionChan) Len() int {
 	return len(*v)
 }
 
-var matcherTypeMap = map[Domain_Type]strmatcher.Type{
-	Domain_Plain:  strmatcher.Substr,
-	Domain_Regex:  strmatcher.Regex,
-	Domain_Domain: strmatcher.Domain,
-	Domain_Full:   strmatcher.Full,
+var matcherTypeMap = map[routercommon.Domain_Type]strmatcher.Type{
+	routercommon.Domain_Plain:      strmatcher.Substr,
+	routercommon.Domain_Regex:      strmatcher.Regex,
+	routercommon.Domain_RootDomain: strmatcher.Domain,
+	routercommon.Domain_Full:       strmatcher.Full,
 }
 
-func domainToMatcher(domain *Domain) (strmatcher.Matcher, error) {
+func domainToMatcher(domain *routercommon.Domain) (strmatcher.Matcher, error) {
 	matcherType, f := matcherTypeMap[domain.Type]
 	if !f {
 		return nil, newError("unsupported domain type", domain.Type)
@@ -65,26 +64,34 @@ func domainToMatcher(domain *Domain) (strmatcher.Matcher, error) {
 }
 
 type DomainMatcher struct {
-	matchers strmatcher.IndexMatcher
+	matcher strmatcher.IndexMatcher
 }
 
-func NewDomainMatcher(domains []*Domain) (*DomainMatcher, error) {
-	g := new(strmatcher.MatcherGroup)
-	for _, d := range domains {
-		m, err := domainToMatcher(d)
+func NewDomainMatcher(matcherType string, domains []*routercommon.Domain) (*DomainMatcher, error) {
+	var indexMatcher strmatcher.IndexMatcher
+	switch matcherType {
+	case "mph", "hybrid":
+		indexMatcher = strmatcher.NewMphIndexMatcher()
+	case "linear":
+		indexMatcher = strmatcher.NewLinearIndexMatcher()
+	default:
+		indexMatcher = strmatcher.NewLinearIndexMatcher()
+	}
+	for _, domain := range domains {
+		matcher, err := domainToMatcher(domain)
 		if err != nil {
 			return nil, err
 		}
-		g.Add(m)
+		indexMatcher.Add(matcher)
 	}
-
-	return &DomainMatcher{
-		matchers: g,
-	}, nil
+	if err := indexMatcher.Build(); err != nil {
+		return nil, err
+	}
+	return &DomainMatcher{matcher: indexMatcher}, nil
 }
 
-func (m *DomainMatcher) ApplyDomain(domain string) bool {
-	return len(m.matchers.Match(domain)) > 0
+func (m *DomainMatcher) Match(domain string) bool {
+	return m.matcher.MatchAny(domain)
 }
 
 // Apply implements Condition.
@@ -93,7 +100,7 @@ func (m *DomainMatcher) Apply(ctx routing.Context) bool {
 	if len(domain) == 0 {
 		return false
 	}
-	return m.ApplyDomain(domain)
+	return m.Match(domain)
 }
 
 type MultiGeoIPMatcher struct {
@@ -101,7 +108,7 @@ type MultiGeoIPMatcher struct {
 	onSource bool
 }
 
-func NewMultiGeoIPMatcher(geoips []*GeoIP, onSource bool) (*MultiGeoIPMatcher, error) {
+func NewMultiGeoIPMatcher(geoips []*routercommon.GeoIP, onSource bool) (*MultiGeoIPMatcher, error) {
 	var matchers []*GeoIPMatcher
 	for _, geoip := range geoips {
 		matcher, err := globalGeoIPContainer.Add(geoip)
@@ -142,7 +149,7 @@ type PortMatcher struct {
 	onSource bool
 }
 
-// NewPortMatcher create a new port matcher that can match source or destination port
+// NewPortMatcher creates a new port matcher that can match source or destination port
 func NewPortMatcher(list *net.PortList, onSource bool) *PortMatcher {
 	return &PortMatcher{
 		port:     net.PortListFromProto(list),
@@ -154,9 +161,8 @@ func NewPortMatcher(list *net.PortList, onSource bool) *PortMatcher {
 func (v *PortMatcher) Apply(ctx routing.Context) bool {
 	if v.onSource {
 		return v.port.Contains(ctx.GetSourcePort())
-	} else {
-		return v.port.Contains(ctx.GetTargetPort())
 	}
+	return v.port.Contains(ctx.GetTargetPort())
 }
 
 type NetworkMatcher struct {

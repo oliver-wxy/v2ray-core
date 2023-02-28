@@ -1,10 +1,11 @@
+//go:build !confonly
 // +build !confonly
 
 package vless
 
 import (
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/uuid"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/uuid"
 )
 
 // AsAccount implements protocol.Account.AsAccount().
@@ -24,7 +25,7 @@ func (a *Account) AsAccount() (protocol.Account, error) {
 type MemoryAccount struct {
 	// ID of the account.
 	ID *protocol.ID
-	// Flow of the account. May be "xtls-rprx-origin".
+	// Flow of the account.
 	Flow string
 	// Encryption of the account. Used for client connections, and only accepts "none" for now.
 	Encryption string

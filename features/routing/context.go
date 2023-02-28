@@ -1,7 +1,7 @@
 package routing
 
 import (
-	"v2ray.com/core/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
 // Context is a feature to store connection information for routing.
@@ -35,6 +35,9 @@ type Context interface {
 	// GetUser returns the user email from the connection content, if exists.
 	GetUser() string
 
-	// GetAttributes returns extra attributes from the conneciont content.
+	// GetAttributes returns extra attributes from the connection content.
 	GetAttributes() map[string]string
+
+	// GetSkipDNSResolve returns a flag switch for weather skip dns resolve during route pick.
+	GetSkipDNSResolve() bool
 }

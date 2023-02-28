@@ -10,13 +10,15 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
-	"v2ray.com/core/app/router"
-	. "v2ray.com/core/app/router/command"
-	"v2ray.com/core/app/stats"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/features/routing"
-	"v2ray.com/core/testing/mocks"
+
+	"github.com/v2fly/v2ray-core/v5/app/router"
+	. "github.com/v2fly/v2ray-core/v5/app/router/command"
+	"github.com/v2fly/v2ray-core/v5/app/router/routercommon"
+	"github.com/v2fly/v2ray-core/v5/app/stats"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
+	"github.com/v2fly/v2ray-core/v5/testing/mocks"
 )
 
 func TestServiceSubscribeRoutingStats(t *testing.T) {
@@ -212,7 +214,7 @@ func TestSerivceTestRoute(t *testing.T) {
 	r := new(router.Router)
 	mockCtl := gomock.NewController(t)
 	defer mockCtl.Finish()
-	common.Must(r.Init(&router.Config{
+	common.Must(r.Init(context.TODO(), &router.Config{
 		Rule: []*router.RoutingRule{
 			{
 				InboundTag: []string{"in"},
@@ -231,11 +233,11 @@ func TestSerivceTestRoute(t *testing.T) {
 				TargetTag:      &router.RoutingRule_Tag{Tag: "out"},
 			},
 			{
-				Domain:    []*router.Domain{{Type: router.Domain_Domain, Value: "com"}},
+				Domain:    []*routercommon.Domain{{Type: routercommon.Domain_RootDomain, Value: "com"}},
 				TargetTag: &router.RoutingRule_Tag{Tag: "out"},
 			},
 			{
-				SourceGeoip: []*router.GeoIP{{CountryCode: "private", Cidr: []*router.CIDR{{Ip: []byte{127, 0, 0, 0}, Prefix: 8}}}},
+				SourceGeoip: []*routercommon.GeoIP{{CountryCode: "private", Cidr: []*routercommon.CIDR{{Ip: []byte{127, 0, 0, 0}, Prefix: 8}}}},
 				TargetTag:   &router.RoutingRule_Tag{Tag: "out"},
 			},
 			{
@@ -247,7 +249,7 @@ func TestSerivceTestRoute(t *testing.T) {
 				TargetTag: &router.RoutingRule_Tag{Tag: "out"},
 			},
 		},
-	}, mocks.NewDNSClient(mockCtl), mocks.NewOutboundManager(mockCtl)))
+	}, mocks.NewDNSClient(mockCtl), mocks.NewOutboundManager(mockCtl), nil))
 
 	lis := bufconn.Listen(1024 * 1024)
 	bufDialer := func(context.Context, string) (net.Conn, error) {

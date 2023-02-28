@@ -1,26 +1,26 @@
-// +build !confonly
-
 package trojan
 
 import (
 	"context"
-	"time"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/retry"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/signal"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/policy"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/internet"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/net/packetaddr"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/retry"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/proxy"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/transport/internet/udp"
 )
 
-// Client is a inbound handler for trojan protocol
+// Client is an inbound handler for trojan protocol
 type Client struct {
 	serverPicker  protocol.ServerPicker
 	policyManager policy.Manager
@@ -49,7 +49,7 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 }
 
 // Process implements OutboundHandler.Process().
-func (c *Client) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error { // nolint: funlen
+func (c *Client) Process(ctx context.Context, link *transport.Link, dialer internet.Dialer) error {
 	outbound := session.OutboundFromContext(ctx)
 	if outbound == nil || !outbound.Target.IsValid() {
 		return newError("target not specified")
@@ -60,7 +60,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	var server *protocol.ServerSpec
 	var conn internet.Connection
 
-	err := retry.ExponentialBackoff(5, 100).On(func() error { // nolint: gomnd
+	err := retry.ExponentialBackoff(5, 100).On(func() error {
 		server = c.serverPicker.PickServer()
 		rawConn, err := dialer.Dial(ctx, server.Destination())
 		if err != nil {
@@ -73,7 +73,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	if err != nil {
 		return newError("failed to find an available destination").AtWarning().Base(err)
 	}
-	newError("tunneling request to ", destination, " via ", server.Destination()).WriteToLog(session.ExportIDToError(ctx))
+	newError("tunneling request to ", destination, " via ", server.Destination().NetAddr()).WriteToLog(session.ExportIDToError(ctx))
 
 	defer conn.Close()
 
@@ -86,6 +86,51 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 	sessionPolicy := c.policyManager.ForLevel(user.Level)
 	ctx, cancel := context.WithCancel(ctx)
 	timer := signal.CancelAfterInactivity(ctx, cancel, sessionPolicy.Timeouts.ConnectionIdle)
+
+	if packetConn, err := packetaddr.ToPacketAddrConn(link, destination); err == nil {
+		postRequest := func() error {
+			defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
+
+			var buffer [2048]byte
+			_, addr, err := packetConn.ReadFrom(buffer[:])
+			if err != nil {
+				return newError("failed to read a packet").Base(err)
+			}
+			dest := net.DestinationFromAddr(addr)
+
+			bufferWriter := buf.NewBufferedWriter(buf.NewWriter(conn))
+			connWriter := &ConnWriter{Writer: bufferWriter, Target: dest, Account: account}
+			packetWriter := &PacketWriter{Writer: connWriter, Target: dest}
+
+			// write some request payload to buffer
+			if _, err := packetWriter.WriteTo(buffer[:], addr); err != nil {
+				return newError("failed to write a request payload").Base(err)
+			}
+
+			// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
+			if err = bufferWriter.SetBuffered(false); err != nil {
+				return newError("failed to flush payload").Base(err).AtWarning()
+			}
+
+			return udp.CopyPacketConn(packetWriter, packetConn, udp.UpdateActivity(timer))
+		}
+
+		getResponse := func() error {
+			defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
+
+			packetReader := &PacketReader{Reader: conn}
+			packetConnectionReader := &PacketConnectionReader{reader: packetReader}
+
+			return udp.CopyPacketConn(packetConn, packetConnectionReader, udp.UpdateActivity(timer))
+		}
+
+		responseDoneAndCloseWriter := task.OnSuccess(getResponse, task.Close(link.Writer))
+		if err := task.Run(ctx, postRequest, responseDoneAndCloseWriter); err != nil {
+			return newError("connection ends").Base(err)
+		}
+
+		return nil
+	}
 
 	postRequest := func() error {
 		defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
@@ -101,11 +146,11 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		}
 
 		// write some request payload to buffer
-		if err = buf.CopyOnceTimeout(link.Reader, bodyWriter, time.Millisecond*100); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout { // nolint: lll,gomnd
-			return newError("failed to write A reqeust payload").Base(err).AtWarning()
+		if err = buf.CopyOnceTimeout(link.Reader, bodyWriter, proxy.FirstPayloadTimeout); err != nil && err != buf.ErrNotTimeoutReader && err != buf.ErrReadTimeout {
+			return newError("failed to write a request payload").Base(err).AtWarning()
 		}
 
-		// Flush; bufferWriter.WriteMultiBufer now is bufferWriter.writer.WriteMultiBuffer
+		// Flush; bufferWriter.WriteMultiBuffer now is bufferWriter.writer.WriteMultiBuffer
 		if err = bufferWriter.SetBuffered(false); err != nil {
 			return newError("failed to flush payload").Base(err).AtWarning()
 		}
@@ -131,7 +176,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		return buf.Copy(reader, link.Writer, buf.UpdateActivity(timer))
 	}
 
-	var responseDoneAndCloseWriter = task.OnSuccess(getResponse, task.Close(link.Writer))
+	responseDoneAndCloseWriter := task.OnSuccess(getResponse, task.Close(link.Writer))
 	if err := task.Run(ctx, postRequest, responseDoneAndCloseWriter); err != nil {
 		return newError("connection ends").Base(err)
 	}
@@ -140,7 +185,7 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 }
 
 func init() {
-	common.Must(common.RegisterConfig((*ClientConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) { // nolint: lll
+	common.Must(common.RegisterConfig((*ClientConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return NewClient(ctx, config.(*ClientConfig))
 	}))
 }

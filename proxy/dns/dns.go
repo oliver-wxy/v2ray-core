@@ -1,35 +1,44 @@
-// +build !confonly
-
 package dns
 
 import (
 	"context"
 	"io"
 	"sync"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	dns_proto "v2ray.com/core/common/protocol/dns"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/dns"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/internet"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	dns_proto "github.com/v2fly/v2ray-core/v5/common/protocol/dns"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/strmatcher"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		h := new(Handler)
-		if err := core.RequireFeatures(ctx, func(dnsClient dns.Client) error {
-			return h.Init(config.(*Config), dnsClient)
+		if err := core.RequireFeatures(ctx, func(dnsClient dns.Client, policyManager policy.Manager) error {
+			return h.Init(config.(*Config), dnsClient, policyManager)
 		}); err != nil {
 			return nil, err
 		}
 		return h, nil
+	}))
+
+	common.Must(common.RegisterConfig((*SimplifiedConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		simplifiedServer := config.(*SimplifiedConfig)
+		_ = simplifiedServer
+		fullConfig := &Config{}
+		return common.CreateObject(ctx, fullConfig)
 	}))
 }
 
@@ -38,24 +47,33 @@ type ownLinkVerifier interface {
 }
 
 type Handler struct {
+	client          dns.Client
 	ipv4Lookup      dns.IPv4Lookup
 	ipv6Lookup      dns.IPv6Lookup
 	ownLinkVerifier ownLinkVerifier
 	server          net.Destination
+	timeout         time.Duration
 }
 
-func (h *Handler) Init(config *Config, dnsClient dns.Client) error {
-	ipv4lookup, ok := dnsClient.(dns.IPv4Lookup)
-	if !ok {
+func (h *Handler) Init(config *Config, dnsClient dns.Client, policyManager policy.Manager) error {
+	// Enable FakeDNS for DNS outbound
+	if clientWithFakeDNS, ok := dnsClient.(dns.ClientWithFakeDNS); ok {
+		dnsClient = clientWithFakeDNS.AsFakeDNSClient()
+	}
+	h.client = dnsClient
+	h.timeout = policyManager.ForLevel(config.UserLevel).Timeouts.ConnectionIdle
+
+	if ipv4lookup, ok := dnsClient.(dns.IPv4Lookup); ok {
+		h.ipv4Lookup = ipv4lookup
+	} else {
 		return newError("dns.Client doesn't implement IPv4Lookup")
 	}
-	h.ipv4Lookup = ipv4lookup
 
-	ipv6lookup, ok := dnsClient.(dns.IPv6Lookup)
-	if !ok {
+	if ipv6lookup, ok := dnsClient.(dns.IPv6Lookup); ok {
+		h.ipv6Lookup = ipv6lookup
+	} else {
 		return newError("dns.Client doesn't implement IPv6Lookup")
 	}
-	h.ipv6Lookup = ipv6lookup
 
 	if v, ok := dnsClient.(ownLinkVerifier); ok {
 		h.ownLinkVerifier = v
@@ -156,6 +174,9 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 		}
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	timer := signal.CancelAfterInactivity(ctx, cancel, h.timeout)
+
 	request := func() error {
 		defer conn.Close()
 
@@ -169,11 +190,15 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 				return err
 			}
 
+			timer.Update()
+
 			if !h.isOwnLink(ctx) {
 				isIPQuery, domain, id, qType := parseIPQuery(b.Bytes())
 				if isIPQuery {
-					go h.handleIPQuery(id, qType, domain, writer)
-					continue
+					if domain, err := strmatcher.ToDomain(domain); err == nil {
+						go h.handleIPQuery(id, qType, domain, writer)
+						continue
+					}
 				}
 			}
 
@@ -194,6 +219,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 				return err
 			}
 
+			timer.Update()
+
 			if err := writer.WriteMessage(b); err != nil {
 				return err
 			}
@@ -210,6 +237,8 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, d internet.
 func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string, writer dns_proto.MessageWriter) {
 	var ips []net.IP
 	var err error
+
+	var ttl uint32 = 600
 
 	switch qType {
 	case dnsmessage.TypeA:
@@ -232,7 +261,6 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 		RecursionAvailable: true,
 		RecursionDesired:   true,
 		Response:           true,
-		Authoritative:      true,
 	})
 	builder.EnableCompression()
 	common.Must(builder.StartQuestions())
@@ -243,7 +271,7 @@ func (h *Handler) handleIPQuery(id uint16, qType dnsmessage.Type, domain string,
 	}))
 	common.Must(builder.StartAnswers())
 
-	rHeader := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: 600}
+	rHeader := dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(domain), Class: dnsmessage.ClassINET, TTL: ttl}
 	for _, ip := range ips {
 		if len(ip) == net.IPv4len {
 			var r dnsmessage.AResource

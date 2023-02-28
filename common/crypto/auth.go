@@ -2,13 +2,14 @@ package crypto
 
 import (
 	"crypto/cipher"
+	"crypto/rand"
 	"io"
-	"math/rand"
 
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/bytespool"
-	"v2ray.com/core/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/bytespool"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
 )
 
 type BytesGenerator func() []byte
@@ -261,7 +262,8 @@ func (w *AuthenticationWriter) seal(b []byte) (*buf.Buffer, error) {
 		return nil, err
 	}
 	if paddingSize > 0 {
-		// With size of the chunk and padding length encrypted, the content of padding doesn't matter much.
+		// These paddings will send in clear text.
+		// To avoid leakage of PRNG internal state, a cryptographically secure PRNG should be used.
 		paddingBytes := eb.Extend(paddingSize)
 		common.Must2(rand.Read(paddingBytes))
 	}
@@ -278,7 +280,11 @@ func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
 	}
 
 	payloadSize := buf.Size - int32(w.auth.Overhead()) - w.sizeParser.SizeBytes() - maxPadding
-	mb2Write := make(buf.MultiBuffer, 0, len(mb)+10)
+	if len(mb)+10 > 64*1024*1024 {
+		return errors.New("value too large")
+	}
+	sliceSize := len(mb) + 10
+	mb2Write := make(buf.MultiBuffer, 0, sliceSize)
 
 	temp := buf.New()
 	defer temp.Release()
@@ -290,7 +296,6 @@ func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
 		mb = nb
 
 		eb, err := w.seal(rawBytes[:nBytes])
-
 		if err != nil {
 			buf.ReleaseMulti(mb2Write)
 			return err
@@ -307,7 +312,11 @@ func (w *AuthenticationWriter) writeStream(mb buf.MultiBuffer) error {
 func (w *AuthenticationWriter) writePacket(mb buf.MultiBuffer) error {
 	defer buf.ReleaseMulti(mb)
 
-	mb2Write := make(buf.MultiBuffer, 0, len(mb)+1)
+	if len(mb)+1 > 64*1024*1024 {
+		return errors.New("value too large")
+	}
+	sliceSize := len(mb) + 1
+	mb2Write := make(buf.MultiBuffer, 0, sliceSize)
 
 	for _, b := range mb {
 		if b.IsEmpty() {

@@ -2,9 +2,9 @@ package scenarios
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"testing"
@@ -12,16 +12,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"v2ray.com/core"
-	"v2ray.com/core/app/proxyman"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/serial"
-	"v2ray.com/core/proxy/freedom"
-	v2http "v2ray.com/core/proxy/http"
-	v2httptest "v2ray.com/core/testing/servers/http"
-	"v2ray.com/core/testing/servers/tcp"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/app/proxyman"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/proxy/freedom"
+	v2http "github.com/v2fly/v2ray-core/v5/proxy/http"
+	v2httptest "github.com/v2fly/v2ray-core/v5/testing/servers/http"
+	"github.com/v2fly/v2ray-core/v5/testing/servers/tcp"
 )
 
 func TestHttpConformance(t *testing.T) {
@@ -69,11 +69,12 @@ func TestHttpConformance(t *testing.T) {
 
 		resp, err := client.Get("http://127.0.0.1:" + httpServerPort.String())
 		common.Must(err)
+		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatal("status: ", resp.StatusCode)
 		}
 
-		content, err := ioutil.ReadAll(resp.Body)
+		content, err := io.ReadAll(resp.Body)
 		common.Must(err)
 		if string(content) != "Home" {
 			t.Fatal("body: ", string(content))
@@ -130,13 +131,14 @@ func TestHttpError(t *testing.T) {
 
 		resp, err := client.Get("http://127.0.0.1:" + dest.Port.String())
 		common.Must(err)
+		defer resp.Body.Close()
 		if resp.StatusCode != 503 {
 			t.Error("status: ", resp.StatusCode)
 		}
 	}
 }
 
-func TestHttpConnectMethod(t *testing.T) {
+func TestHTTPConnectMethod(t *testing.T) {
 	tcpServer := tcp.Server{
 		MsgProcessor: xor,
 	}
@@ -179,13 +181,16 @@ func TestHttpConnectMethod(t *testing.T) {
 
 		payload := make([]byte, 1024*64)
 		common.Must2(rand.Read(payload))
-		req, err := http.NewRequest("Connect", "http://"+dest.NetAddr()+"/", bytes.NewReader(payload))
+
+		ctx := context.Background()
+		req, err := http.NewRequestWithContext(ctx, "Connect", "http://"+dest.NetAddr()+"/", bytes.NewReader(payload))
 		req.Header.Set("X-a", "b")
 		req.Header.Set("X-b", "d")
 		common.Must(err)
 
 		resp, err := client.Do(req)
 		common.Must(err)
+		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatal("status: ", resp.StatusCode)
 		}
@@ -260,11 +265,12 @@ func TestHttpPost(t *testing.T) {
 
 		resp, err := client.Post("http://127.0.0.1:"+httpServerPort.String()+"/testpost", "application/x-www-form-urlencoded", bytes.NewReader(payload))
 		common.Must(err)
+		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Fatal("status: ", resp.StatusCode)
 		}
 
-		content, err := ioutil.ReadAll(resp.Body)
+		content, err := io.ReadAll(resp.Body)
 		common.Must(err)
 		if r := cmp.Diff(content, xor(payload)); r != "" {
 			t.Fatal(r)
@@ -328,35 +334,40 @@ func TestHttpBasicAuth(t *testing.T) {
 		{
 			resp, err := client.Get("http://127.0.0.1:" + httpServerPort.String())
 			common.Must(err)
+			defer resp.Body.Close()
 			if resp.StatusCode != 407 {
 				t.Fatal("status: ", resp.StatusCode)
 			}
 		}
 
 		{
-			req, err := http.NewRequest("GET", "http://127.0.0.1:"+httpServerPort.String(), nil)
+			ctx := context.Background()
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+httpServerPort.String(), nil)
 			common.Must(err)
 
 			setProxyBasicAuth(req, "a", "c")
 			resp, err := client.Do(req)
 			common.Must(err)
+			defer resp.Body.Close()
 			if resp.StatusCode != 407 {
 				t.Fatal("status: ", resp.StatusCode)
 			}
 		}
 
 		{
-			req, err := http.NewRequest("GET", "http://127.0.0.1:"+httpServerPort.String(), nil)
+			ctx := context.Background()
+			req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:"+httpServerPort.String(), nil)
 			common.Must(err)
 
 			setProxyBasicAuth(req, "a", "b")
 			resp, err := client.Do(req)
 			common.Must(err)
+			defer resp.Body.Close()
 			if resp.StatusCode != 200 {
 				t.Fatal("status: ", resp.StatusCode)
 			}
 
-			content, err := ioutil.ReadAll(resp.Body)
+			content, err := io.ReadAll(resp.Body)
 			common.Must(err)
 			if string(content) != "Home" {
 				t.Fatal("body: ", string(content))

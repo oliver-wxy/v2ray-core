@@ -1,18 +1,15 @@
-// +build !confonly
-
 // Package blackhole is an outbound handler that blocks all connections.
-
 package blackhole
 
-//go:generate go run v2ray.com/core/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 import (
 	"context"
 	"time"
 
-	"v2ray.com/core/common"
-	"v2ray.com/core/transport"
-	"v2ray.com/core/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/transport"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 // Handler is an outbound connection that silently swallow the entire payload.
@@ -45,5 +42,12 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		return New(ctx, config.(*Config))
+	}))
+
+	common.Must(common.RegisterConfig((*SimplifiedConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		simplifiedServer := config.(*SimplifiedConfig)
+		_ = simplifiedServer
+		fullConfig := &Config{}
+		return common.CreateObject(ctx, fullConfig)
 	}))
 }

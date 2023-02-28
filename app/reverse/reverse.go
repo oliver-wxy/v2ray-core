@@ -1,22 +1,20 @@
-// +build !confonly
-
 package reverse
 
-//go:generate go run v2ray.com/core/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 import (
 	"context"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/errors"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/features/outbound"
-	"v2ray.com/core/features/routing"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/features/outbound"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
 )
 
 const (
-	internalDomain = "reverse.internal.v2ray.com"
+	internalDomain = "reverse.internal.v2fly.org"
 )
 
 func isDomain(dest net.Destination, domain string) bool {
@@ -31,7 +29,7 @@ func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
 		r := new(Reverse)
 		if err := core.RequireFeatures(ctx, func(d routing.Dispatcher, om outbound.Manager) error {
-			return r.Init(config.(*Config), d, om)
+			return r.Init(ctx, config.(*Config), d, om)
 		}); err != nil {
 			return nil, err
 		}
@@ -44,9 +42,9 @@ type Reverse struct {
 	portals []*Portal
 }
 
-func (r *Reverse) Init(config *Config, d routing.Dispatcher, ohm outbound.Manager) error {
+func (r *Reverse) Init(ctx context.Context, config *Config, d routing.Dispatcher, ohm outbound.Manager) error {
 	for _, bConfig := range config.BridgeConfig {
-		b, err := NewBridge(bConfig, d)
+		b, err := NewBridge(ctx, bConfig, d)
 		if err != nil {
 			return err
 		}
@@ -54,7 +52,7 @@ func (r *Reverse) Init(config *Config, d routing.Dispatcher, ohm outbound.Manage
 	}
 
 	for _, pConfig := range config.PortalConfig {
-		p, err := NewPortal(pConfig, ohm)
+		p, err := NewPortal(ctx, pConfig, ohm)
 		if err != nil {
 			return err
 		}

@@ -1,39 +1,49 @@
-// +build !confonly
-
 package dokodemo
 
-//go:generate go run v2ray.com/core/common/errors/errorgen
+//go:generate go run github.com/v2fly/v2ray-core/v5/common/errors/errorgen
 
 import (
 	"context"
 	"sync/atomic"
 	"time"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/log"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/session"
-	"v2ray.com/core/common/signal"
-	"v2ray.com/core/common/task"
-	"v2ray.com/core/features/policy"
-	"v2ray.com/core/features/routing"
-	"v2ray.com/core/transport/internet"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/log"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/session"
+	"github.com/v2fly/v2ray-core/v5/common/signal"
+	"github.com/v2fly/v2ray-core/v5/common/task"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 func init() {
 	common.Must(common.RegisterConfig((*Config)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
-		d := new(DokodemoDoor)
+		d := new(Door)
 		err := core.RequireFeatures(ctx, func(pm policy.Manager) error {
 			return d.Init(config.(*Config), pm, session.SockoptFromContext(ctx))
 		})
 		return d, err
 	}))
+
+	common.Must(common.RegisterConfig((*SimplifiedConfig)(nil), func(ctx context.Context, config interface{}) (interface{}, error) {
+		simplifiedServer := config.(*SimplifiedConfig)
+		fullConfig := &Config{
+			Address:        simplifiedServer.Address,
+			Port:           simplifiedServer.Port,
+			Networks:       simplifiedServer.Networks.Network,
+			FollowRedirect: simplifiedServer.FollowRedirect,
+		}
+
+		return common.CreateObject(ctx, fullConfig)
+	}))
 }
 
-type DokodemoDoor struct {
+type Door struct {
 	policyManager policy.Manager
 	config        *Config
 	address       net.Address
@@ -41,8 +51,8 @@ type DokodemoDoor struct {
 	sockopt       *session.Sockopt
 }
 
-// Init initializes the DokodemoDoor instance with necessary parameters.
-func (d *DokodemoDoor) Init(config *Config, pm policy.Manager, sockopt *session.Sockopt) error {
+// Init initializes the Door instance with necessary parameters.
+func (d *Door) Init(config *Config, pm policy.Manager, sockopt *session.Sockopt) error {
 	if (config.NetworkList == nil || len(config.NetworkList.Network) == 0) && len(config.Networks) == 0 {
 		return newError("no network specified")
 	}
@@ -56,15 +66,15 @@ func (d *DokodemoDoor) Init(config *Config, pm policy.Manager, sockopt *session.
 }
 
 // Network implements proxy.Inbound.
-func (d *DokodemoDoor) Network() []net.Network {
+func (d *Door) Network() []net.Network {
 	if len(d.config.Networks) > 0 {
 		return d.config.Networks
 	}
 
-	return d.config.NetworkList.Network
+	return d.config.NetworkList.GetNetwork()
 }
 
-func (d *DokodemoDoor) policy() policy.Session {
+func (d *Door) policy() policy.Session {
 	config := d.config
 	p := d.policyManager.ForLevel(config.UserLevel)
 	if config.Timeout > 0 && config.UserLevel == 0 {
@@ -78,7 +88,7 @@ type hasHandshakeAddress interface {
 }
 
 // Process implements proxy.Inbound.
-func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn internet.Connection, dispatcher routing.Dispatcher) error {
+func (d *Door) Process(ctx context.Context, network net.Network, conn internet.Connection, dispatcher routing.Dispatcher) error {
 	newError("processing connection from: ", conn.RemoteAddr()).AtDebug().WriteToLog(session.ExportIDToError(ctx))
 	dest := net.Destination{
 		Network: network,
@@ -156,7 +166,7 @@ func (d *DokodemoDoor) Process(ctx context.Context, network net.Network, conn in
 	if network == net.Network_TCP {
 		writer = buf.NewWriter(conn)
 	} else {
-		//if we are in TPROXY mode, use linux's udp forging functionality
+		// if we are in TPROXY mode, use linux's udp forging functionality
 		if !destinationOverridden {
 			writer = &buf.SequentialWriter{Writer: conn}
 		} else {

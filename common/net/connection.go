@@ -1,5 +1,3 @@
-// +build !confonly
-
 package net
 
 import (
@@ -7,9 +5,10 @@ import (
 	"net"
 	"time"
 
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/signal/done"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/signal/done"
 )
 
 type ConnectionOption func(*connection)
@@ -109,8 +108,12 @@ func (c *connection) Write(b []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 
+	if len(b)/buf.Size+1 > 64*1024*1024 {
+		return 0, errors.New("value too large")
+	}
 	l := len(b)
-	mb := make(buf.MultiBuffer, 0, l/buf.Size+1)
+	sliceSize := l/buf.Size + 1
+	mb := make(buf.MultiBuffer, 0, sliceSize)
 	mb = buf.MergeBytes(mb, b)
 	return l, c.writer.WriteMultiBuffer(mb)
 }

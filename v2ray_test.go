@@ -3,22 +3,24 @@ package core_test
 import (
 	"testing"
 
-	proto "github.com/golang/protobuf/proto"
-	. "v2ray.com/core"
-	"v2ray.com/core/app/dispatcher"
-	"v2ray.com/core/app/proxyman"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/protocol"
-	"v2ray.com/core/common/serial"
-	"v2ray.com/core/common/uuid"
-	"v2ray.com/core/features/dns"
-	"v2ray.com/core/features/dns/localdns"
-	_ "v2ray.com/core/main/distro/all"
-	"v2ray.com/core/proxy/dokodemo"
-	"v2ray.com/core/proxy/vmess"
-	"v2ray.com/core/proxy/vmess/outbound"
-	"v2ray.com/core/testing/servers/tcp"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	. "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/app/dispatcher"
+	"github.com/v2fly/v2ray-core/v5/app/proxyman"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/uuid"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/features/dns/localdns"
+	_ "github.com/v2fly/v2ray-core/v5/main/distro/all"
+	"github.com/v2fly/v2ray-core/v5/proxy/dokodemo"
+	"github.com/v2fly/v2ray-core/v5/proxy/vmess"
+	"github.com/v2fly/v2ray-core/v5/proxy/vmess/outbound"
+	"github.com/v2fly/v2ray-core/v5/testing/servers/tcp"
 )
 
 func TestV2RayDependency(t *testing.T) {
@@ -38,9 +40,9 @@ func TestV2RayDependency(t *testing.T) {
 func TestV2RayClose(t *testing.T) {
 	port := tcp.PickPort()
 
-	userId := uuid.New()
+	userID := uuid.New()
 	config := &Config{
-		App: []*serial.TypedMessage{
+		App: []*anypb.Any{
 			serial.ToTypedMessage(&dispatcher.Config{}),
 			serial.ToTypedMessage(&proxyman.InboundConfig{}),
 			serial.ToTypedMessage(&proxyman.OutboundConfig{}),
@@ -70,7 +72,7 @@ func TestV2RayClose(t *testing.T) {
 							User: []*protocol.User{
 								{
 									Account: serial.ToTypedMessage(&vmess.Account{
-										Id: userId.String(),
+										Id: userID.String(),
 									}),
 								},
 							},
@@ -84,7 +86,7 @@ func TestV2RayClose(t *testing.T) {
 	cfgBytes, err := proto.Marshal(config)
 	common.Must(err)
 
-	server, err := StartInstance("protobuf", cfgBytes)
+	server, err := StartInstance(FormatProtobuf, cfgBytes)
 	common.Must(err)
 	server.Close()
 }

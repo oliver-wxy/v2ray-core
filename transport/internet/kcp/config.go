@@ -1,11 +1,11 @@
-// +build !confonly
-
 package kcp
 
 import (
 	"crypto/cipher"
-	"v2ray.com/core/common"
-	"v2ray.com/core/transport/internet"
+
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 const protocolName = "mkcp"
@@ -68,7 +68,7 @@ func (c *Config) GetSecurity() (cipher.AEAD, error) {
 
 func (c *Config) GetPackerHeader() (internet.PacketHeader, error) {
 	if c.HeaderConfig != nil {
-		rawConfig, err := c.HeaderConfig.GetInstance()
+		rawConfig, err := serial.GetInstanceOf(c.HeaderConfig)
 		if err != nil {
 			return nil, err
 		}

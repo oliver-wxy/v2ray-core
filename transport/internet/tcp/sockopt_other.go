@@ -1,11 +1,11 @@
+//go:build !linux && !freebsd
 // +build !linux,!freebsd
-// +build !confonly
 
 package tcp
 
 import (
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/transport/internet"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/transport/internet"
 )
 
 func GetOriginalDestination(conn internet.Connection) (net.Destination, error) {

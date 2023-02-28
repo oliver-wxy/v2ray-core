@@ -1,3 +1,4 @@
+//go:build linux
 // +build linux
 
 package udp
@@ -6,7 +7,8 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
-	"v2ray.com/core/common/net"
+
+	"github.com/v2fly/v2ray-core/v5/common/net"
 )
 
 func RetrieveOriginalDest(oob []byte) net.Destination {

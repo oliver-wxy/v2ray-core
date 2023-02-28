@@ -1,11 +1,9 @@
-// +build !confonly
-
 package kcp
 
 import (
 	"sync"
 
-	"v2ray.com/core/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
 )
 
 type ReceivingWindow struct {

@@ -1,5 +1,3 @@
-// +build !confonly
-
 package core
 
 import (
@@ -7,16 +5,18 @@ import (
 	"reflect"
 	"sync"
 
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/serial"
-	"v2ray.com/core/features"
-	"v2ray.com/core/features/dns"
-	"v2ray.com/core/features/dns/localdns"
-	"v2ray.com/core/features/inbound"
-	"v2ray.com/core/features/outbound"
-	"v2ray.com/core/features/policy"
-	"v2ray.com/core/features/routing"
-	"v2ray.com/core/features/stats"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/environment"
+	"github.com/v2fly/v2ray-core/v5/common/environment/transientstorageimpl"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/features"
+	"github.com/v2fly/v2ray-core/v5/features/dns"
+	"github.com/v2fly/v2ray-core/v5/features/dns/localdns"
+	"github.com/v2fly/v2ray-core/v5/features/inbound"
+	"github.com/v2fly/v2ray-core/v5/features/outbound"
+	"github.com/v2fly/v2ray-core/v5/features/policy"
+	"github.com/v2fly/v2ray-core/v5/features/routing"
+	"github.com/v2fly/v2ray-core/v5/features/stats"
 )
 
 // Server is an instance of V2Ray. At any time, there must be at most one Server instance running.
@@ -92,13 +92,15 @@ type Instance struct {
 	features           []features.Feature
 	featureResolutions []resolution
 	running            bool
+	env                environment.RootEnvironment
 
 	ctx context.Context
 }
 
 func AddInboundHandler(server *Instance, config *InboundHandlerConfig) error {
 	inboundManager := server.GetFeature(inbound.ManagerType()).(inbound.Manager)
-	rawHandler, err := CreateObject(server, config)
+	proxyEnv := server.env.ProxyEnvironment("i" + config.Tag)
+	rawHandler, err := CreateObjectWithEnvironment(server, config, proxyEnv)
 	if err != nil {
 		return err
 	}
@@ -124,7 +126,8 @@ func addInboundHandlers(server *Instance, configs []*InboundHandlerConfig) error
 
 func AddOutboundHandler(server *Instance, config *OutboundHandlerConfig) error {
 	outboundManager := server.GetFeature(outbound.ManagerType()).(outbound.Manager)
-	rawHandler, err := CreateObject(server, config)
+	proxyEnv := server.env.ProxyEnvironment("o" + config.Tag)
+	rawHandler, err := CreateObjectWithEnvironment(server, config, proxyEnv)
 	if err != nil {
 		return err
 	}
@@ -159,9 +162,9 @@ func RequireFeatures(ctx context.Context, callback interface{}) error {
 // The instance is not started at this point.
 // To ensure V2Ray instance works properly, the config must contain one Dispatcher, one InboundHandlerManager and one OutboundHandlerManager. Other features are optional.
 func New(config *Config) (*Instance, error) {
-	var server = &Instance{ctx: context.Background()}
+	server := &Instance{ctx: context.Background()}
 
-	err, done := initInstanceWithConfig(config, server)
+	done, err := initInstanceWithConfig(config, server)
 	if done {
 		return nil, err
 	}
@@ -169,10 +172,10 @@ func New(config *Config) (*Instance, error) {
 	return server, nil
 }
 
-func NewWithContext(config *Config, ctx context.Context) (*Instance, error) {
-	var server = &Instance{ctx: ctx}
+func NewWithContext(ctx context.Context, config *Config) (*Instance, error) {
+	server := &Instance{ctx: ctx}
 
-	err, done := initInstanceWithConfig(config, server)
+	done, err := initInstanceWithConfig(config, server)
 	if done {
 		return nil, err
 	}
@@ -180,26 +183,30 @@ func NewWithContext(config *Config, ctx context.Context) (*Instance, error) {
 	return server, nil
 }
 
-func initInstanceWithConfig(config *Config, server *Instance) (error, bool) {
+func initInstanceWithConfig(config *Config, server *Instance) (bool, error) {
 	if config.Transport != nil {
 		features.PrintDeprecatedFeatureWarning("global transport settings")
 	}
 	if err := config.Transport.Apply(); err != nil {
-		return err, true
+		return true, err
 	}
 
+	server.env = environment.NewRootEnvImpl(server.ctx, transientstorageimpl.NewScopedTransientStorageImpl())
+
 	for _, appSettings := range config.App {
-		settings, err := appSettings.GetInstance()
+		settings, err := serial.GetInstanceOf(appSettings)
 		if err != nil {
-			return err, true
+			return true, err
 		}
-		obj, err := CreateObject(server, settings)
+		key := appSettings.TypeUrl
+		appEnv := server.env.AppEnvironment(key)
+		obj, err := CreateObjectWithEnvironment(server, settings, appEnv)
 		if err != nil {
-			return err, true
+			return true, err
 		}
 		if feature, ok := obj.(features.Feature); ok {
 			if err := server.AddFeature(feature); err != nil {
-				return err, true
+				return true, err
 			}
 		}
 	}
@@ -217,23 +224,23 @@ func initInstanceWithConfig(config *Config, server *Instance) (error, bool) {
 	for _, f := range essentialFeatures {
 		if server.GetFeature(f.Type) == nil {
 			if err := server.AddFeature(f.Instance); err != nil {
-				return err, true
+				return true, err
 			}
 		}
 	}
 
 	if server.featureResolutions != nil {
-		return newError("not all dependency are resolved."), true
+		return true, newError("not all dependency are resolved.")
 	}
 
 	if err := addInboundHandlers(server, config.Inbound); err != nil {
-		return err, true
+		return true, err
 	}
 
 	if err := addOutboundHandlers(server, config.Outbound); err != nil {
-		return err, true
+		return true, err
 	}
-	return nil, false
+	return false, nil
 }
 
 // Type implements common.HasType.

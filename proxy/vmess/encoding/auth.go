@@ -5,9 +5,10 @@ import (
 	"encoding/binary"
 	"hash/fnv"
 
-	"v2ray.com/core/common"
-
 	"golang.org/x/crypto/sha3"
+
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/crypto"
 )
 
 // Authenticate authenticates a byte array using Fnv hash.
@@ -38,8 +39,7 @@ func (NoOpAuthenticator) Open(dst, nonce, ciphertext, additionalData []byte) ([]
 }
 
 // FnvAuthenticator is an AEAD based on Fnv hash.
-type FnvAuthenticator struct {
-}
+type FnvAuthenticator struct{}
 
 // NonceSize implements AEAD.NonceSize().
 func (*FnvAuthenticator) NonceSize() int {
@@ -116,4 +116,12 @@ func (s *ShakeSizeParser) NextPaddingLen() uint16 {
 
 func (s *ShakeSizeParser) MaxPaddingLen() uint16 {
 	return 64
+}
+
+type AEADSizeParser struct {
+	crypto.AEADChunkSizeParser
+}
+
+func NewAEADSizeParser(auth *crypto.AEADAuthenticator) *AEADSizeParser {
+	return &AEADSizeParser{crypto.AEADChunkSizeParser{Auth: auth}}
 }

@@ -1,5 +1,3 @@
-// +build !confonly
-
 package command
 
 import (
@@ -7,11 +5,12 @@ import (
 
 	grpc "google.golang.org/grpc"
 
-	"v2ray.com/core"
-	"v2ray.com/core/common"
-	"v2ray.com/core/features/inbound"
-	"v2ray.com/core/features/outbound"
-	"v2ray.com/core/proxy"
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/features/inbound"
+	"github.com/v2fly/v2ray-core/v5/features/outbound"
+	"github.com/v2fly/v2ray-core/v5/proxy"
 )
 
 // InboundOperation is the interface for operations that applies to inbound handlers.
@@ -83,7 +82,7 @@ func (s *handlerServer) RemoveInbound(ctx context.Context, request *RemoveInboun
 }
 
 func (s *handlerServer) AlterInbound(ctx context.Context, request *AlterInboundRequest) (*AlterInboundResponse, error) {
-	rawOperation, err := request.Operation.GetInstance()
+	rawOperation, err := serial.GetInstanceOf(request.Operation)
 	if err != nil {
 		return nil, newError("unknown operation").Base(err)
 	}
@@ -112,7 +111,7 @@ func (s *handlerServer) RemoveOutbound(ctx context.Context, request *RemoveOutbo
 }
 
 func (s *handlerServer) AlterOutbound(ctx context.Context, request *AlterOutboundRequest) (*AlterOutboundResponse, error) {
-	rawOperation, err := request.Operation.GetInstance()
+	rawOperation, err := serial.GetInstanceOf(request.Operation)
 	if err != nil {
 		return nil, newError("unknown operation").Base(err)
 	}

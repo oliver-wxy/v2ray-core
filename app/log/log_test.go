@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/golang/mock/gomock"
-	"v2ray.com/core/app/log"
-	"v2ray.com/core/common"
-	clog "v2ray.com/core/common/log"
-	"v2ray.com/core/testing/mocks"
+
+	"github.com/v2fly/v2ray-core/v5/app/log"
+	"github.com/v2fly/v2ray-core/v5/common"
+	clog "github.com/v2fly/v2ray-core/v5/common/log"
+	"github.com/v2fly/v2ray-core/v5/testing/mocks"
 )
 
 func TestCustomLogHandler(t *testing.T) {
@@ -27,9 +28,8 @@ func TestCustomLogHandler(t *testing.T) {
 	})
 
 	logger, err := log.New(context.Background(), &log.Config{
-		ErrorLogLevel: clog.Severity_Debug,
-		ErrorLogType:  log.LogType_Console,
-		AccessLogType: log.LogType_None,
+		Error:  &log.LogSpecification{Type: log.LogType_Console, Level: clog.Severity_Debug},
+		Access: &log.LogSpecification{Type: log.LogType_None},
 	})
 	common.Must(err)
 

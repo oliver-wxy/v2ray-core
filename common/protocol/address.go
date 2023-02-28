@@ -3,10 +3,10 @@ package protocol
 import (
 	"io"
 
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
 )
 
 type AddressOption func(*option)
@@ -37,7 +37,6 @@ func WithAddressTypeParser(atp AddressTypeParser) AddressOption {
 
 type AddressSerializer interface {
 	ReadAddressPort(buffer *buf.Buffer, input io.Reader) (net.Address, net.Port, error)
-
 	WriteAddressPort(writer io.Writer, addr net.Address, port net.Port) error
 }
 

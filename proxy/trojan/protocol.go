@@ -3,25 +3,25 @@ package trojan
 import (
 	"encoding/binary"
 	"io"
+	gonet "net"
 
-	"v2ray.com/core/common/buf"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/protocol"
+	"github.com/v2fly/v2ray-core/v5/common/buf"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/protocol"
 )
 
 var (
 	crlf = []byte{'\r', '\n'}
 
 	addrParser = protocol.NewAddressParser(
-		protocol.AddressFamilyByte(0x01, net.AddressFamilyIPv4),   // nolint: gomnd
-		protocol.AddressFamilyByte(0x04, net.AddressFamilyIPv6),   // nolint: gomnd
-		protocol.AddressFamilyByte(0x03, net.AddressFamilyDomain), // nolint: gomnd
+		protocol.AddressFamilyByte(0x01, net.AddressFamilyIPv4),
+		protocol.AddressFamilyByte(0x04, net.AddressFamilyIPv6),
+		protocol.AddressFamilyByte(0x03, net.AddressFamilyDomain),
 	)
 )
 
 const (
-	maxLength = 8192
-
+	maxLength       = 8192
 	commandTCP byte = 1
 	commandUDP byte = 3
 )
@@ -127,6 +127,12 @@ func (w *PacketWriter) WriteMultiBufferWithMetadata(mb buf.MultiBuffer, dest net
 	}
 
 	return nil
+}
+
+func (w *PacketWriter) WriteTo(payload []byte, addr gonet.Addr) (int, error) {
+	dest := net.DestinationFromAddr(addr)
+
+	return w.writePacket(payload, dest)
 }
 
 func (w *PacketWriter) writePacket(payload []byte, dest net.Destination) (int, error) { // nolint: unparam
@@ -279,4 +285,27 @@ func (r *PacketReader) ReadMultiBufferWithMetadata() (*PacketPayload, error) {
 	}
 
 	return &PacketPayload{Target: dest, Buffer: mb}, nil
+}
+
+type PacketConnectionReader struct {
+	reader  *PacketReader
+	payload *PacketPayload
+}
+
+func (r *PacketConnectionReader) ReadFrom(p []byte) (n int, addr gonet.Addr, err error) {
+	if r.payload == nil || r.payload.Buffer.IsEmpty() {
+		r.payload, err = r.reader.ReadMultiBufferWithMetadata()
+		if err != nil {
+			return
+		}
+	}
+
+	addr = &gonet.UDPAddr{
+		IP:   r.payload.Target.Address.IP(),
+		Port: int(r.payload.Target.Port),
+	}
+
+	r.payload.Buffer, n = buf.SplitFirstBytes(r.payload.Buffer, p)
+
+	return
 }

@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -13,16 +13,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/golang/protobuf/proto"
-	"v2ray.com/core"
-	"v2ray.com/core/app/dispatcher"
-	"v2ray.com/core/app/proxyman"
-	"v2ray.com/core/common"
-	"v2ray.com/core/common/errors"
-	"v2ray.com/core/common/log"
-	"v2ray.com/core/common/net"
-	"v2ray.com/core/common/retry"
-	"v2ray.com/core/common/serial"
+	"google.golang.org/protobuf/proto"
+
+	core "github.com/v2fly/v2ray-core/v5"
+	"github.com/v2fly/v2ray-core/v5/app/dispatcher"
+	"github.com/v2fly/v2ray-core/v5/app/proxyman"
+	"github.com/v2fly/v2ray-core/v5/common"
+	"github.com/v2fly/v2ray-core/v5/common/errors"
+	"github.com/v2fly/v2ray-core/v5/common/log"
+	"github.com/v2fly/v2ray-core/v5/common/net"
+	"github.com/v2fly/v2ray-core/v5/common/retry"
+	"github.com/v2fly/v2ray-core/v5/common/serial"
+	"github.com/v2fly/v2ray-core/v5/common/units"
 )
 
 func xor(b []byte) []byte {
@@ -101,7 +103,7 @@ func genTestBinaryPath() {
 	testBinaryPathGen.Do(func() {
 		var tempDir string
 		common.Must(retry.Timed(5, 100).On(func() error {
-			dir, err := ioutil.TempDir("", "v2ray")
+			dir, err := os.MkdirTemp("", "v2ray")
 			if err != nil {
 				return err
 			}
@@ -118,7 +120,7 @@ func genTestBinaryPath() {
 }
 
 func GetSourcePath() string {
-	return filepath.Join("v2ray.com", "core", "main")
+	return filepath.Join("github.com", "v2fly", "v2ray-core", "v5", "main")
 }
 
 func CloseAllServers(servers []*exec.Cmd) {
@@ -139,6 +141,23 @@ func CloseAllServers(servers []*exec.Cmd) {
 	log.Record(&log.GeneralMessage{
 		Severity: log.Severity_Info,
 		Content:  "All server closed.",
+	})
+}
+
+func CloseServer(server *exec.Cmd) {
+	log.Record(&log.GeneralMessage{
+		Severity: log.Severity_Info,
+		Content:  "Closing server.",
+	})
+	if runtime.GOOS == "windows" {
+		server.Process.Kill()
+	} else {
+		server.Process.Signal(syscall.SIGTERM)
+	}
+	server.Process.Wait()
+	log.Record(&log.GeneralMessage{
+		Severity: log.Severity_Info,
+		Content:  "Server closed.",
 	})
 }
 
@@ -164,7 +183,7 @@ func testTCPConn(port net.Port, payloadSize int, timeout time.Duration) func() e
 	}
 }
 
-func testUDPConn(port net.Port, payloadSize int, timeout time.Duration) func() error {
+func testUDPConn(port net.Port, payloadSize int, timeout time.Duration) func() error { // nolint: unparam
 	return func() error {
 		conn, err := net.DialUDP("udp", nil, &net.UDPAddr{
 			IP:   []byte{127, 0, 0, 1},
@@ -180,7 +199,18 @@ func testUDPConn(port net.Port, payloadSize int, timeout time.Duration) func() e
 }
 
 func testTCPConn2(conn net.Conn, payloadSize int, timeout time.Duration) func() error {
-	return func() error {
+	return func() (err1 error) {
+		start := time.Now()
+		defer func() {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			// For info on each, see: https://golang.org/pkg/runtime/#MemStats
+			fmt.Println("testConn finishes:", time.Since(start).Milliseconds(), "ms\t",
+				err1, "\tAlloc =", units.ByteSize(m.Alloc).String(),
+				"\tTotalAlloc =", units.ByteSize(m.TotalAlloc).String(),
+				"\tSys =", units.ByteSize(m.Sys).String(),
+				"\tNumGC =", m.NumGC)
+		}()
 		payload := make([]byte, payloadSize)
 		common.Must2(rand.Read(payload))
 
@@ -203,6 +233,5 @@ func testTCPConn2(conn net.Conn, payloadSize int, timeout time.Duration) func() 
 		}
 
 		return nil
-
 	}
 }
