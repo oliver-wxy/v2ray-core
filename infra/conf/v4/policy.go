@@ -12,6 +12,7 @@ type Policy struct {
 	StatsUserUplink   bool    `json:"statsUserUplink"`
 	StatsUserDownlink bool    `json:"statsUserDownlink"`
 	BufferSize        *int32  `json:"bufferSize"`
+	Limit             int32   `json:"limit"`
 }
 
 func (t *Policy) Build() (*policy.Policy, error) {
@@ -34,6 +35,7 @@ func (t *Policy) Build() (*policy.Policy, error) {
 		Stats: &policy.Policy_Stats{
 			UserUplink:   t.StatsUserUplink,
 			UserDownlink: t.StatsUserDownlink,
+			Limit:        t.Limit,
 		},
 	}
 

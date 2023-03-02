@@ -24,6 +24,7 @@ message Policy {
   message Stats {
     bool user_uplink = 1;
     bool user_downlink = 2;
+    int32 limit = 3;
   }
 
   message Buffer {

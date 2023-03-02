@@ -73,6 +73,7 @@ func (p *Policy) ToCorePolicy() policy.Session {
 	if p.Stats != nil {
 		cp.Stats.UserUplink = p.Stats.UserUplink
 		cp.Stats.UserDownlink = p.Stats.UserDownlink
+		cp.Stats.Limit = p.Stats.Limit
 	}
 	if p.Buffer != nil {
 		cp.Buffer.PerConnection = p.Buffer.Connection

@@ -27,6 +27,8 @@ type Stats struct {
 	UserUplink bool
 	// Whether or not to enable stat counter for user downlink traffic.
 	UserDownlink bool
+
+	Limit int32
 }
 
 // Buffer contains settings for internal buffer.
@@ -128,6 +130,7 @@ func SessionDefault() Session {
 		Stats: Stats{
 			UserUplink:   false,
 			UserDownlink: false,
+			Limit:        0,
 		},
 		Buffer: defaultBufferPolicy(),
 	}

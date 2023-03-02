@@ -4,6 +4,8 @@ package dispatcher
 
 import (
 	"context"
+	"github.com/v2fly/v2ray-core/v5/common/limiter"
+	_log "log"
 	"strings"
 	"sync"
 	"time"
@@ -88,10 +90,11 @@ func (r *cachedReader) Interrupt() {
 
 // DefaultDispatcher is a default implementation of Dispatcher.
 type DefaultDispatcher struct {
-	ohm    outbound.Manager
-	router routing.Router
-	policy policy.Manager
-	stats  stats.Manager
+	ohm     outbound.Manager
+	router  routing.Router
+	policy  policy.Manager
+	stats   stats.Manager
+	Limiter *limiter.Limiter
 }
 
 func init() {
@@ -112,6 +115,8 @@ func (d *DefaultDispatcher) Init(config *Config, om outbound.Manager, router rou
 	d.router = router
 	d.policy = pm
 	d.stats = sm
+	d.Limiter = limiter.New()
+	_log.Println("初始化defaultdespatcher")
 	return nil
 }
 
@@ -151,6 +156,15 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 
 	if user != nil && len(user.Email) > 0 {
 		p := d.policy.ForLevel(user.Level)
+
+		bucket, ok := d.Limiter.GetUserBucket(user.Email, p.Stats.Limit)
+		_log.Println(p.Stats.Limit)
+		if ok && user.Level == 0 {
+			_log.Println("限流开始", bucket)
+			inboundLink.Writer = d.Limiter.RateWriter(inboundLink.Writer, bucket)
+			outboundLink.Writer = d.Limiter.RateWriter(outboundLink.Writer, bucket)
+		}
+
 		if p.Stats.UserUplink {
 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
 			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
